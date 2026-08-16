@@ -1,5 +1,6 @@
 /** @jsxImportSource @opentui/solid */
 
+import { basename } from "node:path";
 import type {
   TuiDialogSelectOption,
   TuiPlugin,
@@ -10,25 +11,15 @@ import { SessionDb, type SessionRow } from "./db/queries.js";
 
 const id = "opencode-session-ref";
 
-function formatRelativeTime(timestamp: number): string {
-  const diff = Date.now() - timestamp;
-  const seconds = Math.floor(diff / 1000);
-  const minutes = Math.floor(seconds / 60);
-  const hours = Math.floor(minutes / 60);
-  const days = Math.floor(hours / 24);
-
-  if (days > 0) return `${days}d ago`;
-  if (hours > 0) return `${hours}h ago`;
-  if (minutes > 0) return `${minutes}m ago`;
-  return "just now";
+function dateGroupLabel(timestamp: number): string {
+  const today = new Date().toDateString();
+  const label = new Date(timestamp).toDateString();
+  return label === today ? "Today" : label;
 }
 
-function shortenPath(fullPath: string): string {
-  const home = process.env.HOME || "";
-  if (home && fullPath.startsWith(home)) {
-    return `~${fullPath.slice(home.length)}`;
-  }
-  return fullPath;
+function truncateTitle(title: string, maxLen = 40): string {
+  if (title.length <= maxLen) return title;
+  return title.slice(0, maxLen) + "...";
 }
 
 async function openSessionPicker(api: TuiPluginApi): Promise<void> {
@@ -45,15 +36,17 @@ async function openSessionPicker(api: TuiPluginApi): Promise<void> {
       return;
     }
 
-    // 2. Build options for DialogSelect
-    const options: TuiDialogSelectOption<SessionRow>[] = sessions.map((s) => ({
-      title: s.title || s.slug,
+    // 2. Sort by last update (most recent first), group by date like /sessions.
+    //    Date group label is the group header; folder basename shown as muted footer.
+    const sessionsSorted = [...sessions].sort((a, b) => b.time_updated - a.time_updated);
+    const options: TuiDialogSelectOption<SessionRow>[] = sessionsSorted.map((s) => ({
+      title: truncateTitle(s.title || s.slug),
       value: s,
-      description: `${s.slug} • ${formatRelativeTime(s.time_created)} • ${shortenPath(s.directory)}`,
-      category: shortenPath(s.directory),
+      category: dateGroupLabel(s.time_updated),
+      footer: basename(s.directory).slice(0, 20),
     }));
 
-    // 3. Render DialogSelect
+    // 3. Render DialogSelect, widened to match the /sessions dialog
     api.ui.dialog.replace(
       () => (
         <api.ui.DialogSelect<SessionRow>
@@ -83,6 +76,7 @@ async function openSessionPicker(api: TuiPluginApi): Promise<void> {
         // on close
       },
     );
+    api.ui.dialog.setSize("large");
   } catch (err) {
     api.ui?.toast?.({
       title: "Error",
