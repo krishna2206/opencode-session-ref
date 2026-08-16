@@ -6,30 +6,30 @@
 
 ---
 
-## ✨ Features
+## Features
 
-- **🎯 Interactive TUI Picker (`Ctrl+S` / `/ref-session`)**:
+- **Interactive TUI Picker (`Ctrl+S` / `/ref-session`)**:
   - Search past sessions in real time by title, slug, or working directory.
   - Automatically formats and inserts a `@session(id: ...)` reference into your prompt.
 
-- **🤖 Autonomous Agent Tools**:
+- **Autonomous Agent Tools**:
   - `session_search`: Search historical sessions by topic, keyword, or past bug discussion.
   - `session_list`: List recent sessions for the current project or across all directories.
   - `session_read`: Read session details in 4 token-optimized modes (`summary`, `turns`, `diff`, `full`).
 
-- **⚡ Token-Efficient & Clean**:
+- **Token-Efficient & Clean**:
   - Parses SQLite data directly in read-only mode (`~/.local/share/opencode/opencode.db`).
   - Strips noisy runtime tokens (`reasoning`, `step-start`, `step-finish`) and truncates excessive tool outputs.
   - Preserves provider prompt caching with static system prompt injection.
 
 ---
 
-## 🚀 Installation & Setup
+## Installation & Setup
 
 ### 1. Build the Plugin
 
 ```bash
-git clone https://github.com/krishna/opencode-session-ref.git
+git clone https://github.com/krishna2206/opencode-session-ref.git
 cd opencode-session-ref
 pnpm install
 pnpm build
@@ -58,7 +58,7 @@ Add the plugin path to your `~/.config/opencode/tui.jsonc`:
 
 ---
 
-## ⌨️ Usage
+## Usage
 
 ### 1. Interactive Picker (User-Driven)
 - Press **`Ctrl+S`** anywhere in the TUI (or type `/ref-session`, `/ref`, `/session`).
@@ -80,7 +80,7 @@ The agent will automatically:
 
 ---
 
-## 🛠️ Tool Reference
+## Tool Reference
 
 | Tool | Parameters | Description |
 | :--- | :--- | :--- |
@@ -90,7 +90,7 @@ The agent will automatically:
 
 ---
 
-## 🧪 Development & Testing
+## Development & Testing
 
 Run unit & database integration tests:
 
@@ -106,6 +106,6 @@ pnpm build
 
 ---
 
-## 📄 License
+## License
 
 MIT
