@@ -1,10 +1,10 @@
 import type { Plugin } from "@opencode-ai/plugin";
 import { sessionSearchTool } from "./tools/search.js";
 import { createSessionListTool } from "./tools/list.js";
-import { sessionReadTool } from "./tools/read.js";
+import { createSessionReadTool } from "./tools/read.js";
 import { SESSION_REF_SYSTEM_PROMPT } from "./prompt.js";
 
-export const SessionRefPlugin: Plugin = async ({ directory, worktree }) => {
+export const SessionRefPlugin: Plugin = async ({ directory, worktree, client }) => {
   const currentDir = directory ?? worktree;
 
   return {
@@ -15,7 +15,7 @@ export const SessionRefPlugin: Plugin = async ({ directory, worktree }) => {
     tool: {
       session_search: sessionSearchTool,
       session_list: createSessionListTool(currentDir),
-      session_read: sessionReadTool,
+      session_read: createSessionReadTool(client),
     },
   };
 };

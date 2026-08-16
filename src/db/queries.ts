@@ -97,19 +97,22 @@ export class SessionDb {
   }
 
   /**
-   * Find a session by full ID or slug.
+   * Find a session by full ID or slug. Slugs are not guaranteed unique across
+   * projects, so slug lookups return the most recently updated match.
    */
   static async findSession(idOrSlug: string): Promise<SessionRow | null> {
     const conn = await this.getConn();
+    const isId = idOrSlug.startsWith("ses_");
     const row = conn.get<SessionRow>(
       `SELECT id, project_id, parent_id, slug, directory, title, version,
               share_url, summary_additions, summary_deletions, summary_files,
               summary_diffs, time_created, time_updated, agent, model, cost,
               tokens_input, tokens_output
        FROM session
-       WHERE id = ? OR slug = ?
+       WHERE ${isId ? "id = ?" : "slug = ?"}
+       ${isId ? "" : "ORDER BY time_updated DESC "}
        LIMIT 1`,
-      [idOrSlug, idOrSlug],
+      [idOrSlug],
     );
     return row ?? null;
   }

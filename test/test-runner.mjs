@@ -2,7 +2,9 @@ import assert from "node:assert";
 import { SessionDb } from "../dist/db/queries.js";
 import { sessionSearchTool } from "../dist/tools/search.js";
 import { createSessionListTool } from "../dist/tools/list.js";
-import { sessionReadTool } from "../dist/tools/read.js";
+import { createSessionReadTool } from "../dist/tools/read.js";
+
+const sessionReadTool = createSessionReadTool({ session: { diff: async () => ({ data: [] }) } });
 
 async function runTests() {
   console.log("--- Starting opencode-session-ref tests ---\n");
