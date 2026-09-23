@@ -1,5 +1,6 @@
-import type { SessionRow, SessionSearchResult, MessageRow, PartRow } from "../db/queries.js";
-import { buildConversationTurns, truncateText } from "./sanitize.js";
+import type { SessionRow, SessionSearchResult, MessageRow } from "../db/queries.js";
+import { buildConversationTurns, collectFileEdits, truncateText } from "./sanitize.js";
+import { formatFileEdits } from "./diff.js";
 
 function formatDate(timestamp: number): string {
   const d = new Date(timestamp);
@@ -19,27 +20,45 @@ function timeAgo(timestamp: number): string {
   return "just now";
 }
 
+/** V2 sessions may have no title yet; the slug always exists. */
+function sessionTitle(session: { title: string | null; slug: string }): string {
+  return session.title || session.slug;
+}
+
+/** `model` is stored as JSON `{ id, providerID, variant? }`. */
+function formatModel(model: string | null): string | undefined {
+  if (!model) return undefined;
+  try {
+    const parsed = JSON.parse(model) as { id?: string; providerID?: string; variant?: string };
+    if (!parsed.id) return model;
+    const name = parsed.providerID ? `${parsed.providerID}/${parsed.id}` : parsed.id;
+    return parsed.variant ? `${name}#${parsed.variant}` : name;
+  } catch {
+    return model;
+  }
+}
+
 /**
  * High-level summary of the session: metadata, files touched, turns overview.
  */
 export function formatSessionSummary(
   session: SessionRow,
   messages: MessageRow[],
-  parts: PartRow[],
 ): string {
-  const turns = buildConversationTurns(messages, parts);
+  const turns = buildConversationTurns(messages);
   const allFilesModified = Array.from(
     new Set(turns.flatMap((t) => t.filesModified)),
   );
 
   const lines: string[] = [];
-  lines.push(`# Session: ${session.title}`);
+  lines.push(`# Session: ${sessionTitle(session)}`);
   lines.push(`- **ID**: \`${session.id}\``);
   lines.push(`- **Slug**: \`${session.slug}\``);
   lines.push(`- **Directory**: \`${session.directory}\``);
   lines.push(`- **Created**: ${formatDate(session.time_created)} (${timeAgo(session.time_created)})`);
   if (session.agent) lines.push(`- **Agent**: \`${session.agent}\``);
-  if (session.model) lines.push(`- **Model**: \`${session.model}\``);
+  const model = formatModel(session.model);
+  if (model) lines.push(`- **Model**: \`${model}\``);
   lines.push(`- **Total Turns**: ${turns.length}`);
 
   if (allFilesModified.length > 0) {
@@ -66,10 +85,12 @@ export function formatSessionSummary(
     }
   }
 
-  lines.push("\n*(Tip: Use `session_read` with `mode: \"turns\"` to view the full dialogue, or `mode: \"diff\"` to view git diffs)*");
+  lines.push("\n*(Tip: Use `session_read` with `mode: \"turns\"` to view the full dialogue, or `mode: \"diff\"` to view the file edits)*");
 
-  return lines.join("\n");
+  return capBytes(lines.join("\n"));
 }
+
+export const MAX_SESSION_READ_BYTES = 16_000;
 
 /**
  * Formats user and assistant message exchanges.
@@ -77,86 +98,90 @@ export function formatSessionSummary(
 export function formatSessionTurns(
   session: SessionRow,
   messages: MessageRow[],
-  parts: PartRow[],
   lastTurns?: number,
 ): string {
-  const turns = buildConversationTurns(messages, parts);
+  const turns = buildConversationTurns(messages);
   const selectedTurns = lastTurns && lastTurns > 0 ? turns.slice(-lastTurns) : turns;
 
   const lines: string[] = [];
-  lines.push(`# Transcript: ${session.title} (${session.slug})`);
+  lines.push(`# Transcript: ${sessionTitle(session)} (${session.slug})`);
   lines.push(`*Directory: \`${session.directory}\` | ${formatDate(session.time_created)}*`);
   if (lastTurns && lastTurns < turns.length) {
     lines.push(`*(Showing last ${lastTurns} of ${turns.length} total turns)*`);
   }
   lines.push("\n---");
 
+  let accumulatedBytes = Buffer.byteLength(lines.join("\n"), "utf-8");
+  let includedCount = 0;
+
   for (const turn of selectedTurns) {
-    lines.push(`\n## [Turn ${turn.turnIndex}] User:`);
-    lines.push(turn.userPrompt);
+    const turnLines: string[] = [];
+    turnLines.push(`\n## [Turn ${turn.turnIndex}] User:`);
+    turnLines.push(turn.userPrompt);
 
     if (turn.toolsUsed.length > 0) {
-      lines.push("\n> **Actions performed**:");
+      turnLines.push("\n> **Actions performed**:");
       for (const t of turn.toolsUsed) {
         if (t.tool === "bash" && t.command) {
-          lines.push(`> - Run command: \`${truncateText(t.command, 80)}\``);
+          turnLines.push(`> - Run command: \`${truncateText(t.command, 80)}\``);
         } else if ((t.tool === "write" || t.tool === "edit") && t.filePath) {
-          lines.push(`> - Edit file: \`${t.filePath}\``);
+          turnLines.push(`> - Edit file: \`${t.filePath}\``);
         } else if (t.tool === "read" && t.filePath) {
-          lines.push(`> - Read file: \`${t.filePath}\``);
+          turnLines.push(`> - Read file: \`${t.filePath}\``);
         } else {
-          lines.push(`> - Tool: \`${t.tool}\`${t.description ? ` (${t.description})` : ""}`);
+          turnLines.push(`> - Tool: \`${t.tool}\`${t.description ? ` (${t.description})` : ""}`);
         }
       }
     }
 
-    lines.push(`\n## [Turn ${turn.turnIndex}] Assistant:`);
+    turnLines.push(`\n## [Turn ${turn.turnIndex}] Assistant:`);
     if (turn.assistantAnswers.length > 0) {
-      lines.push(turn.assistantAnswers.join("\n\n"));
+      turnLines.push(turn.assistantAnswers.join("\n\n"));
     } else {
-      lines.push("*(Completed actions without extra text commentary)*");
+      turnLines.push("*(Completed actions without extra text commentary)*");
     }
 
-    lines.push("\n---");
+    turnLines.push("\n---");
+
+    const turnChunk = turnLines.join("\n");
+    const turnBytes = Buffer.byteLength(turnChunk, "utf-8");
+
+    if (accumulatedBytes + turnBytes > MAX_SESSION_READ_BYTES) {
+      lines.push(
+        `\n*(Output capped at ~16 KB to protect context. Showing ${includedCount} of ${selectedTurns.length} requested turns. Call session_read with smaller last_turns or mode: "summary")*`,
+      );
+      break;
+    }
+
+    lines.push(turnChunk);
+    accumulatedBytes += turnBytes;
+    includedCount++;
   }
 
   return lines.join("\n");
 }
 
 /**
- * Formats git diffs or file modifications made in the session.
+ * Formats the file edits made by the session's tools.
  */
 export function formatSessionDiff(
   session: SessionRow,
   messages: MessageRow[],
-  parts: PartRow[],
 ): string {
   const lines: string[] = [];
-  lines.push(`# Changes in Session: ${session.title}`);
+  lines.push(`# Changes in Session: ${sessionTitle(session)}`);
   lines.push(`- **ID**: \`${session.id}\` | **Slug**: \`${session.slug}\``);
   lines.push(`- **Directory**: \`${session.directory}\``);
+  lines.push("");
+  lines.push(formatFileEdits(collectFileEdits(messages)));
+  return capBytes(lines.join("\n"));
+}
 
-  if (session.summary_diffs) {
-    lines.push("\n```diff");
-    lines.push(session.summary_diffs);
-    lines.push("```");
-    return lines.join("\n");
-  }
-
-  const turns = buildConversationTurns(messages, parts);
-  const allFiles = Array.from(new Set(turns.flatMap((t) => t.filesModified)));
-
-  if (allFiles.length === 0) {
-    lines.push("\nNo file modifications were recorded in this session.");
-    return lines.join("\n");
-  }
-
-  lines.push(`\n### Modified Files (${allFiles.length}):`);
-  for (const f of allFiles) {
-    lines.push(`- \`${f}\``);
-  }
-
-  return lines.join("\n");
+/** Hard cap shared by every `session_read` mode that can grow unbounded. */
+function capBytes(text: string): string {
+  if (Buffer.byteLength(text, "utf-8") <= MAX_SESSION_READ_BYTES) return text;
+  const cut = Buffer.from(text, "utf-8").subarray(0, MAX_SESSION_READ_BYTES).toString("utf-8");
+  return `${cut}\n\n*(Output capped at ~16 KB to protect context.)*`;
 }
 
 /**
@@ -165,10 +190,9 @@ export function formatSessionDiff(
 export function formatSessionFull(
   session: SessionRow,
   messages: MessageRow[],
-  parts: PartRow[],
   lastTurns?: number,
 ): string {
-  return formatSessionTurns(session, messages, parts, lastTurns);
+  return formatSessionTurns(session, messages, lastTurns);
 }
 
 /**
@@ -185,7 +209,7 @@ export function formatSessionList(sessions: SessionRow[]): string {
   lines.push("| :--- | :--- | :--- | :--- |");
 
   for (const s of sessions) {
-    const title = s.title.replace(/\|/g, "-");
+    const title = sessionTitle(s).replace(/\|/g, "-");
     const ago = timeAgo(s.time_created);
     lines.push(`| **${title}** (\`${s.slug}\`) | \`${s.id}\` | ${ago} | \`${s.directory}\` |`);
   }
@@ -209,7 +233,7 @@ export function formatSearchResults(
   lines.push(`Found ${results.length} session(s) matching "${query}":\n`);
 
   for (const r of results) {
-    lines.push(`### ${r.title} (\`${r.slug}\`)`);
+    lines.push(`### ${sessionTitle(r)} (\`${r.slug}\`)`);
     lines.push(`- **ID**: \`${r.id}\``);
     lines.push(`- **Date**: ${formatDate(r.time_created)} (${timeAgo(r.time_created)})`);
     lines.push(`- **Directory**: \`${r.directory}\``);

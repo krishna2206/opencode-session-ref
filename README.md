@@ -9,7 +9,7 @@
 ## Features
 
 - **Interactive TUI Picker (`Ctrl+S` / `/ref-session`)**:
-  - Search past sessions in real time by title, slug, or working directory.
+  - Lists the root sessions of every project updated this month, grouped by date, with fuzzy filtering.
   - Automatically formats and inserts a `@session(id: ...)` reference into your prompt.
 
 - **Autonomous Agent Tools**:
@@ -18,8 +18,8 @@
   - `session_read`: Read session details in 4 token-optimized modes (`summary`, `turns`, `diff`, `full`).
 
 - **Token-Efficient & Clean**:
-  - Parses SQLite data directly in read-only mode (`~/.local/share/opencode/opencode.db`).
-  - Strips noisy runtime tokens (`reasoning`, `step-start`, `step-finish`) and truncates excessive tool outputs.
+  - Reads the OpenCode 2 database (`session_v2`, `session_message`) directly in read-only mode (`~/.local/share/opencode/opencode.db`): the plugin API gives server plugins no full history or text search.
+  - Drops reasoning, tool output and synthetic reminders; caps every `session_read` output at ~16 KB.
   - Preserves provider prompt caching with static system prompt injection.
 
 ---
@@ -37,21 +37,13 @@ pnpm build
 
 ### 2. Configure OpenCode
 
-#### A. Server Plugin (Tools & System Awareness)
-Create a symlink in your OpenCode plugins folder:
-
-```bash
-ln -sf /path/to/opencode-session-ref/dist/index.js ~/.config/opencode/plugins/opencode-session-ref.js
-```
-
-#### B. TUI Plugin (Interactive Picker & Shortcuts)
-Add the plugin path to your `~/.config/opencode/tui.jsonc`:
+Requires OpenCode 2. Add the built `dist` directory to `plugins` in `~/.config/opencode/opencode.jsonc`
+(the path must point to the directory; OpenCode resolves `dist/index` for the tools and `dist/tui` for the picker):
 
 ```jsonc
 {
-  "$schema": "https://opencode.ai/tui.json",
-  "plugin": [
-    "/path/to/opencode-session-ref"
+  "plugins": [
+    { "package": "file:///path/to/opencode-session-ref/dist" }
   ]
 }
 ```
@@ -61,7 +53,7 @@ Add the plugin path to your `~/.config/opencode/tui.jsonc`:
 ## Usage
 
 ### 1. Interactive Picker (User-Driven)
-- Press **`Ctrl+S`** anywhere in the TUI (or type `/ref-session`, `/ref`, `/session`).
+- Press **`Ctrl+S`** anywhere in the TUI (or type `/ref-session`, `/ref`, `/session-ref`).
 - Filter sessions with live fuzzy search.
 - Press **`Enter`** to inject the reference into your prompt:
   ```text

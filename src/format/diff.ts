@@ -1,10 +1,4 @@
-export interface DiffsInput {
-  file: string;
-  before: string;
-  after: string;
-  additions: number;
-  deletions: number;
-}
+import type { FileEdit } from "./sanitize.js";
 
 const MAX_DP_CELLS = 200_000;
 const DEFAULT_MAX_FILES = 20;
@@ -43,53 +37,61 @@ function diffLines(a: string[], b: string[]): string[] | null {
   return out;
 }
 
-function formatFileDiff(file: DiffsInput, maxLinesPerFile: number): string {
-  const beforeLines = file.before.split("\n");
-  const afterLines = file.after.split("\n");
-
-  const lines =
-    diffLines(beforeLines, afterLines) ??
-    // Too large for line diff: fall back to a compact before/after summary
-    [
-      `-${beforeLines.length} ${beforeLines.slice(0, 10).map((l) => l.trim()).join(" | ")}`.slice(0, 400),
-      `+${afterLines.length} ${afterLines.slice(0, 10).map((l) => l.trim()).join(" | ")}`.slice(0, 400),
-    ];
-
-  let truncated = false;
-  let body = lines;
-  if (lines.length > maxLinesPerFile) {
-    body = lines.slice(0, maxLinesPerFile);
-    truncated = true;
-  }
-
-  const out: string[] = [];
-  out.push(`### ${file.file} (+${file.additions}/-${file.deletions})`);
-  out.push("");
-  out.push("```diff");
-  for (const line of body) out.push(line);
-  if (truncated) out.push(`... (${lines.length - maxLinesPerFile} more diff lines truncated)`);
-  out.push("```");
-  return out.join("\n");
+function capLines(lines: string[], maxLines: number): string[] {
+  if (lines.length <= maxLines) return lines;
+  return [...lines.slice(0, maxLines), `... (${lines.length - maxLines} more diff lines truncated)`];
 }
 
-export function formatFileDiffs(
-  diffs: DiffsInput[],
+function formatFileEdit(edit: FileEdit, maxLinesPerFile: number): string {
+  let lines: string[];
+  if (edit.patch !== undefined) {
+    lines = edit.patch.split("\n").filter((l) => !/^\*\*\* (Begin|End) Patch$/.test(l));
+  } else {
+    const beforeLines = edit.before ? edit.before.split("\n") : [];
+    const afterLines = edit.after ? edit.after.split("\n") : [];
+    lines =
+      diffLines(beforeLines, afterLines) ??
+      // Too large for line diff: fall back to a compact before/after summary
+      [
+        `-${beforeLines.length} ${beforeLines.slice(0, 10).map((l) => l.trim()).join(" | ")}`.slice(0, 400),
+        `+${afterLines.length} ${afterLines.slice(0, 10).map((l) => l.trim()).join(" | ")}`.slice(0, 400),
+      ];
+  }
+
+  const additions = lines.filter((l) => l.startsWith("+")).length;
+  const deletions = lines.filter((l) => l.startsWith("-")).length;
+  return [
+    `### ${edit.file} (+${additions}/-${deletions})`,
+    "",
+    "```diff",
+    ...capLines(lines, maxLinesPerFile),
+    "```",
+  ].join("\n");
+}
+
+/**
+ * Renders the session's file edits, one block per editing tool call, most
+ * recent last. `edit` calls show only the replaced region, not the whole file.
+ */
+export function formatFileEdits(
+  edits: FileEdit[],
   options: { maxFiles?: number; maxLinesPerFile?: number } = {},
 ): string {
   const maxFiles = options.maxFiles ?? DEFAULT_MAX_FILES;
   const maxLinesPerFile = options.maxLinesPerFile ?? DEFAULT_MAX_LINES_PER_FILE;
 
-  if (diffs.length === 0) {
-    return "No file diffs available for this session.";
+  if (edits.length === 0) {
+    return "No file edits were recorded in this session.";
   }
 
-  const selected = diffs.slice(0, maxFiles);
+  // Keep the most recent edits when capping: they reflect the final state.
+  const selected = edits.slice(-maxFiles);
   const out: string[] = [];
-  out.push(`# Diffs (${diffs.length} file${diffs.length > 1 ? "s" : ""}):`);
-  out.push("");
-  for (const file of selected) out.push(formatFileDiff(file, maxLinesPerFile));
-  if (selected.length < diffs.length) {
-    out.push(`\n*(+${diffs.length - selected.length} more files truncated)*`);
+  out.push(`# Edits (${edits.length} tool call${edits.length > 1 ? "s" : ""}):`);
+  if (selected.length < edits.length) {
+    out.push(`\n*(${edits.length - selected.length} earlier edits omitted)*`);
   }
+  out.push("");
+  for (const edit of selected) out.push(formatFileEdit(edit, maxLinesPerFile));
   return out.join("\n");
 }

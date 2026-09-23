@@ -1,15 +1,16 @@
 /** @jsxImportSource @opentui/solid */
 
 import { basename } from "node:path";
-import type {
-  TuiDialogSelectOption,
-  TuiPlugin,
-  TuiPluginApi,
-  TuiPluginModule,
-} from "@opencode-ai/plugin/tui";
-import { SessionDb, type SessionRow } from "./db/queries.js";
+import { Plugin } from "@opencode/plugin/tui";
+
+type Ctx = Plugin.Context;
+type SessionInfo = Awaited<ReturnType<Ctx["client"]["session"]["list"]>>["data"][number];
 
 const id = "opencode-session-ref";
+
+/** Upper bound on sessions shown, so a very active month cannot stall the picker. */
+const MAX_SESSIONS = 100;
+const PAGE_SIZE = 50;
 
 function dateGroupLabel(timestamp: number): string {
   const today = new Date().toDateString();
@@ -22,93 +23,132 @@ function truncateTitle(title: string, maxLen = 40): string {
   return title.slice(0, maxLen) + "...";
 }
 
-async function openSessionPicker(api: TuiPluginApi): Promise<void> {
-  try {
-    // 1. Fetch recent sessions
-    const sessions = await SessionDb.listRecentSessions({ limit: 40 });
+/**
+ * Root sessions of every project updated since the start of the current month,
+ * most recent first. The list endpoint has no date filter, so this pages
+ * through it (newest first) and stops at the first older session.
+ */
+async function listMonthSessions(ctx: Ctx): Promise<SessionInfo[]> {
+  const now = new Date();
+  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+  const sessions: SessionInfo[] = [];
+  let cursor: string | undefined;
 
-    if (sessions.length === 0) {
-      api.ui?.toast?.({
-        title: "Session Reference",
-        message: "No previous sessions found in database.",
-        variant: "warning",
-      });
-      return;
+  while (sessions.length < MAX_SESSIONS) {
+    const page = await ctx.client.session.list({ limit: PAGE_SIZE, order: "desc", parentID: null, cursor });
+    for (const session of page.data) {
+      if (session.time.updated < startOfMonth) return sessions;
+      sessions.push(session);
+      if (sessions.length >= MAX_SESSIONS) return sessions;
     }
+    cursor = page.cursor.next ?? undefined;
+    if (!cursor || page.data.length === 0) return sessions;
+  }
+  return sessions;
+}
 
-    // 2. Sort by last update (most recent first), group by date like /sessions.
-    //    Date group label is the group header; folder basename shown as muted footer.
-    const sessionsSorted = [...sessions].sort((a, b) => b.time_updated - a.time_updated);
-    const options: TuiDialogSelectOption<SessionRow>[] = sessionsSorted.map((s) => ({
-      title: truncateTitle(s.title || s.slug),
-      value: s,
-      category: dateGroupLabel(s.time_updated),
-      footer: basename(s.directory).slice(0, 20),
-    }));
+/**
+ * Inserts text into the prompt. OpenCode 2 gives TUI plugins no prompt-append
+ * call, so this writes into the textarea that had focus before the dialog
+ * opened. The dialog hands focus back 1 ms after closing, hence the delay.
+ */
+function insertIntoPrompt(ctx: Ctx, target: unknown, text: string): boolean {
+  const textarea = target as {
+    isDestroyed?: boolean;
+    insertText?: (text: string) => void;
+    gotoBufferEnd?: () => void;
+  } | null;
+  if (!textarea || textarea.isDestroyed || typeof textarea.insertText !== "function") return false;
+  setTimeout(() => {
+    textarea.gotoBufferEnd?.();
+    textarea.insertText?.(text);
+    ctx.renderer.requestRender();
+  }, 5);
+  return true;
+}
 
-    // 3. Render DialogSelect, widened to match the /sessions dialog
-    api.ui.dialog.replace(
-      () => (
-        <api.ui.DialogSelect<SessionRow>
-          title="Reference Past Session"
-          placeholder="Search sessions by title, slug, or folder..."
-          options={options}
-          onSelect={(selected) => {
-            const session = selected.value;
-            const instruction = `@session(id: "${session.id}", title: "${session.title}")\n[Context: Past session referenced. Use \`session_read(session_id: "${session.id}")\` to inspect context before responding.]\n`;
+async function openSessionPicker(ctx: Ctx): Promise<void> {
+  // Captured before the dialog steals focus.
+  const prompt = ctx.renderer.currentFocusedRenderable;
 
-            if (api.client?.tui?.appendPrompt) {
-              void api.client.tui.appendPrompt({
-                text: instruction,
-              });
-            }
-
-            api.ui.dialog.clear();
-            api.ui?.toast?.({
-              title: "Session Referenced",
-              message: `Injected reference to "${session.title}" (${session.slug})`,
-              variant: "success",
-            });
-          }}
-        />
-      ),
-      () => {
-        // on close
-      },
-    );
-    api.ui.dialog.setSize("large");
+  let sessions: SessionInfo[];
+  try {
+    sessions = await listMonthSessions(ctx);
   } catch (err) {
-    api.ui?.toast?.({
+    ctx.ui.toast.show({
       title: "Error",
       message: `Failed to load sessions: ${err instanceof Error ? err.message : String(err)}`,
       variant: "error",
     });
+    return;
+  }
+
+  if (sessions.length === 0) {
+    ctx.ui.toast.show({
+      title: "Session Reference",
+      message: "No sessions updated this month.",
+      variant: "warning",
+    });
+    return;
+  }
+
+  // Grouped by date like /sessions; folder basename shown as muted footer.
+  const selection = ctx.ui.dialog.select<SessionInfo>({
+    title: "Reference Past Session",
+    placeholder: "Search sessions by title or date...",
+    options: sessions.map((s) => ({
+      title: truncateTitle(s.title || s.id),
+      value: s,
+      category: dateGroupLabel(s.time.updated),
+      footer: basename(s.location.directory).slice(0, 20),
+    })),
+  });
+  ctx.ui.dialog.set({ size: "large" });
+
+  const session = await selection;
+  if (!session) return;
+
+  const title = session.title || session.id;
+  const instruction = `@session(id: "${session.id}", title: "${title}")\n[Context: Past session referenced. Use \`session_read(session_id: "${session.id}")\` to inspect context before responding.]\n`;
+
+  if (insertIntoPrompt(ctx, prompt, instruction)) {
+    ctx.ui.toast.show({
+      title: "Session Referenced",
+      message: `Injected reference to "${title}"`,
+      variant: "success",
+    });
+  } else {
+    ctx.ui.toast.show({
+      title: "Session Reference",
+      message: "Open the prompt before referencing a session.",
+      variant: "warning",
+    });
   }
 }
 
-export const SessionRefTuiPlugin: TuiPlugin = async (api) => {
-  if (api.command?.register) {
-    api.command.register(() => [
-      {
-        title: "Reference Past Session",
-        value: "session.reference",
-        category: "Session Reference",
-        slash: {
-          name: "ref-session",
-          aliases: ["ref", "session-ref"],
-        },
-        keybind: "ctrl+s",
-        onSelect: () => {
-          void openSessionPicker(api);
-        },
-      },
-    ]);
-  }
-};
-
-const pluginModule: TuiPluginModule & { id: string } = {
+export default Plugin.define({
   id,
-  tui: SessionRefTuiPlugin,
-};
-
-export default pluginModule;
+  setup(ctx) {
+    // Keymap layers need a component owner: register from an `app` slot.
+    ctx.ui.slot({
+      append: "app",
+      render() {
+        ctx.keymap.layer(() => ({
+          mode: "global",
+          commands: [
+            {
+              id: "session.reference",
+              title: "Reference Past Session",
+              group: "Session",
+              palette: true,
+              bind: "ctrl+s",
+              slash: { name: "ref-session", aliases: ["ref", "session-ref"] },
+              run: () => openSessionPicker(ctx),
+            },
+          ],
+        }));
+        return null;
+      },
+    });
+  },
+});

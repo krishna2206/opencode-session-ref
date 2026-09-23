@@ -9,5 +9,6 @@ You have access to historical OpenCode conversation sessions via the following t
 ## Guidelines:
 1. When the user references a past session (e.g. \`@session(id: ...)\`, \`/ref-session\`, or names a past topic/session), proactively call \`session_read(session_id: ...)\` to inspect the relevant decisions, discussions, or code before answering.
 2. When the user mentions prior discussions or previous bugs without providing an explicit session ID, use \`session_search\` to locate the candidate session, then inspect it with \`session_read\`.
-3. Start with \`mode: "summary"\` or \`mode: "turns"\` with \`last_turns\` to minimize token overhead unless full detail is needed.
+3. Start with \`mode: "summary"\` or \`mode: "turns"\` with a small \`last_turns\` (e.g. 5-10) to minimize token overhead. Output is hard-capped at 16 KB.
+4. Scope boundary: These tools are strictly for historical code archaeology, bug retrospectives, and conversational context from prior sessions. Do NOT use them to discover general CLI syntax, shell aliases, tool usage, or environment setup. For active tools and commands, inspect local environment files or CLI help directly.
 `.trim();

@@ -1,26 +1,11 @@
-import type { MessageRow, PartRow } from "../db/queries.js";
+import type { MessageRow } from "../db/queries.js";
 
-export interface ParsedPart {
-  id: string;
-  type: string;
-  text?: string;
-  synthetic?: boolean;
-  tool?: string;
-  callID?: string;
-  toolInput?: Record<string, unknown>;
-  toolOutput?: string;
-  toolStatus?: string;
-  files?: string[];
-  raw: Record<string, unknown>;
-}
-
-export interface ParsedMessage {
-  id: string;
-  role: "user" | "assistant" | "system";
-  timeCreated: number;
-  agent?: string;
-  model?: string;
-  parts: ParsedPart[];
+export interface ToolUse {
+  tool: string;
+  description?: string;
+  status?: string;
+  filePath?: string;
+  command?: string;
 }
 
 export interface ConversationTurn {
@@ -28,26 +13,38 @@ export interface ConversationTurn {
   userPrompt: string;
   userTime: number;
   assistantAnswers: string[];
-  toolsUsed: {
-    tool: string;
-    description?: string;
-    status?: string;
-    filePath?: string;
-    command?: string;
-  }[];
+  toolsUsed: ToolUse[];
   filesModified: string[];
   assistantTime?: number;
 }
 
-export function parseMessageData(dataStr: string): Record<string, unknown> {
-  try {
-    return JSON.parse(dataStr);
-  } catch {
-    return {};
-  }
+/**
+ * One file change as recorded by an editing tool call. `patch` is set for
+ * `apply_patch` calls (already a patch), `before`/`after` for the others.
+ */
+export interface FileEdit {
+  file: string;
+  before?: string;
+  after?: string;
+  patch?: string;
 }
 
-export function parsePartData(dataStr: string): Record<string, unknown> {
+/** An assistant content item of type `tool` (V2 `SessionMessage.AssistantTool`). */
+interface ToolItem {
+  type: "tool";
+  name?: string;
+  state?: {
+    status?: string;
+    input?: unknown;
+  };
+}
+
+/** Shell tool name: `bash` in sessions migrated from V1, `shell` in V2. */
+const SHELL_TOOLS = new Set(["bash", "shell"]);
+const EDIT_TOOLS = new Set(["edit", "write", "multiedit"]);
+const PATCH_TOOL = "apply_patch";
+
+export function parseMessageData(dataStr: string): Record<string, unknown> {
   try {
     return JSON.parse(dataStr);
   } catch {
@@ -61,145 +58,154 @@ export function truncateText(text: string, maxLen = 300): string {
   return text.slice(0, maxLen) + `... [truncated ${text.length - maxLen} chars]`;
 }
 
-/**
- * Parses raw SQLite messages and parts into structured turns,
- * stripping internal noise (step-start, step-finish, reasoning)
- * and extracting key actions.
- */
-export function buildConversationTurns(
-  messages: MessageRow[],
-  parts: PartRow[],
-): ConversationTurn[] {
-  const partsByMessage = new Map<string, ParsedPart[]>();
+function contentItems(data: Record<string, unknown>): Record<string, unknown>[] {
+  return Array.isArray(data.content)
+    ? data.content.filter((item): item is Record<string, unknown> => typeof item === "object" && item !== null)
+    : [];
+}
 
-  for (const part of parts) {
-    const raw = parsePartData(part.data);
-    const type = (raw.type as string) || "unknown";
+function toolInput(item: ToolItem): Record<string, unknown> {
+  // A tool still streaming carries its raw input as a string.
+  const input = item.state?.input;
+  return typeof input === "object" && input !== null ? (input as Record<string, unknown>) : {};
+}
 
-    // Ignore internal step markers
-    if (type === "step-start" || type === "step-finish") {
-      continue;
-    }
+function stringField(input: Record<string, unknown>, key: string): string | undefined {
+  const value = input[key];
+  return typeof value === "string" ? value : undefined;
+}
 
-    const parsed: ParsedPart = {
-      id: part.id,
-      type,
-      synthetic: Boolean(raw.synthetic),
-      raw,
-    };
-
-    if (type === "text" && typeof raw.text === "string") {
-      parsed.text = raw.text;
-    } else if (type === "tool") {
-      parsed.tool = typeof raw.tool === "string" ? raw.tool : undefined;
-      parsed.callID = typeof raw.callID === "string" ? raw.callID : undefined;
-      const state = (raw.state as Record<string, unknown>) || {};
-      parsed.toolStatus = typeof state.status === "string" ? state.status : undefined;
-      parsed.toolInput = (state.input as Record<string, unknown>) || {};
-      if (typeof state.output === "string") {
-        parsed.toolOutput = state.output;
-      }
-    } else if (type === "patch" && Array.isArray(raw.files)) {
-      parsed.files = raw.files.filter((f): f is string => typeof f === "string");
-    }
-
-    const list = partsByMessage.get(part.message_id) || [];
-    list.push(parsed);
-    partsByMessage.set(part.message_id, list);
+/** Files named by an `apply_patch` patch (`*** Update|Add|Delete File: <path>`). */
+function patchFiles(patchText: string): string[] {
+  const files: string[] = [];
+  for (const match of patchText.matchAll(/^\*\*\* (?:Update|Add|Delete) File: (.+)$/gm)) {
+    const file = match[1].trim();
+    if (!files.includes(file)) files.push(file);
   }
+  return files;
+}
 
-  const parsedMessages: ParsedMessage[] = messages.map((m) => {
-    const mData = parseMessageData(m.data);
-    const role = (mData.role as "user" | "assistant" | "system") || "user";
-    const model = typeof mData.model === "object" && mData.model !== null
-      ? (mData.model as { modelID?: string }).modelID
-      : undefined;
+function toolUse(item: ToolItem): ToolUse {
+  const input = toolInput(item);
+  const name = item.name ?? "unknown";
+  return {
+    tool: SHELL_TOOLS.has(name) ? "bash" : name,
+    description: stringField(input, "description"),
+    status: item.state?.status,
+    filePath: stringField(input, "filePath"),
+    command: stringField(input, "command"),
+  };
+}
 
-    return {
-      id: m.id,
-      role,
-      timeCreated: m.time_created,
-      agent: typeof mData.agent === "string" ? mData.agent : undefined,
-      model,
-      parts: partsByMessage.get(m.id) || [],
-    };
-  });
+function filesTouched(item: ToolItem): string[] {
+  if (item.state?.status === "error") return [];
+  const input = toolInput(item);
+  if (item.name === PATCH_TOOL) {
+    const patchText = stringField(input, "patchText");
+    return patchText ? patchFiles(patchText) : [];
+  }
+  const filePath = stringField(input, "filePath");
+  return item.name && EDIT_TOOLS.has(item.name) && filePath ? [filePath] : [];
+}
 
+function pushUnique(list: string[], values: string[]): void {
+  for (const value of values) if (!list.includes(value)) list.push(value);
+}
+
+/**
+ * Builds user <-> assistant turns from V2 session messages, keeping the text
+ * exchanged and a one-line trace of each tool call. Reasoning and tool output
+ * are dropped; synthetic reminders are separate message types and never loaded.
+ */
+export function buildConversationTurns(messages: MessageRow[]): ConversationTurn[] {
   const turns: ConversationTurn[] = [];
   let currentTurn: ConversationTurn | null = null;
   let turnCounter = 1;
 
-  for (const msg of parsedMessages) {
-    if (msg.role === "user") {
-      if (currentTurn) {
-        turns.push(currentTurn);
-      }
+  for (const msg of messages) {
+    const data = parseMessageData(msg.data);
 
-      // Extract user text (prefer non-synthetic user text)
-      const userTextParts = msg.parts
-        .filter((p) => p.type === "text" && !p.synthetic && p.text)
-        .map((p) => p.text as string);
-
-      const promptText = userTextParts.join("\n").trim() ||
-        msg.parts.filter((p) => p.type === "text" && p.text).map((p) => p.text as string).join("\n").trim() ||
-        "(Empty or file attachment prompt)";
-
+    if (msg.type === "user") {
+      if (currentTurn) turns.push(currentTurn);
+      const text = typeof data.text === "string" ? data.text.trim() : "";
       currentTurn = {
         turnIndex: turnCounter++,
-        userPrompt: promptText,
-        userTime: msg.timeCreated,
+        userPrompt: text || "(Empty or file attachment prompt)",
+        userTime: msg.time_created,
         assistantAnswers: [],
         toolsUsed: [],
         filesModified: [],
       };
-    } else if (msg.role === "assistant" && currentTurn) {
-      currentTurn.assistantTime = msg.timeCreated;
+      continue;
+    }
 
-      for (const part of msg.parts) {
-        if (part.type === "text" && part.text) {
-          const trimmed = part.text.trim();
-          if (trimmed && !currentTurn.assistantAnswers.includes(trimmed)) {
-            currentTurn.assistantAnswers.push(trimmed);
-          }
-        } else if (part.type === "tool" && part.tool) {
-          const input = part.toolInput || {};
-          const toolDesc = typeof input.description === "string"
-            ? input.description
-            : undefined;
-          const filePath = typeof input.filePath === "string"
-            ? input.filePath
-            : undefined;
-          const command = typeof input.command === "string"
-            ? input.command
-            : undefined;
+    if (!currentTurn) continue;
 
-          currentTurn.toolsUsed.push({
-            tool: part.tool,
-            description: toolDesc,
-            status: part.toolStatus,
-            filePath,
-            command,
-          });
+    if (msg.type === "shell") {
+      // A `!command` the user ran from the prompt.
+      const command = typeof data.command === "string" ? data.command : undefined;
+      currentTurn.toolsUsed.push({ tool: "bash", command, status: typeof data.status === "string" ? data.status : undefined });
+      continue;
+    }
 
-          if ((part.tool === "write" || part.tool === "edit") && filePath) {
-            if (!currentTurn.filesModified.includes(filePath)) {
-              currentTurn.filesModified.push(filePath);
-            }
-          }
-        } else if (part.type === "patch" && part.files) {
-          for (const f of part.files) {
-            if (!currentTurn.filesModified.includes(f)) {
-              currentTurn.filesModified.push(f);
-            }
+    if (msg.type !== "assistant") continue;
+    currentTurn.assistantTime = msg.time_created;
+
+    for (const item of contentItems(data)) {
+      if (item.type === "text" && typeof item.text === "string") {
+        const trimmed = item.text.trim();
+        if (trimmed) {
+          // Truncate overly long assistant replies to max 700 chars in transcripts
+          // to keep session recall compact and prevent prompt pollution
+          const truncatedAnswer = truncateText(trimmed, 700);
+          if (!currentTurn.assistantAnswers.includes(truncatedAnswer)) {
+            currentTurn.assistantAnswers.push(truncatedAnswer);
           }
         }
+      } else if (item.type === "tool") {
+        const tool = item as unknown as ToolItem;
+        currentTurn.toolsUsed.push(toolUse(tool));
+        pushUnique(currentTurn.filesModified, filesTouched(tool));
       }
     }
   }
 
-  if (currentTurn) {
-    turns.push(currentTurn);
-  }
-
+  if (currentTurn) turns.push(currentTurn);
   return turns;
+}
+
+/**
+ * File changes made by the session's editing tools, in call order. The
+ * session's own diff is not reachable from a server plugin and V2 no longer
+ * fills `summary_diffs`, so the tool inputs are the record of what changed.
+ */
+export function collectFileEdits(messages: MessageRow[]): FileEdit[] {
+  const edits: FileEdit[] = [];
+  for (const msg of messages) {
+    if (msg.type !== "assistant") continue;
+    for (const item of contentItems(parseMessageData(msg.data))) {
+      if (item.type !== "tool") continue;
+      const tool = item as unknown as ToolItem;
+      if (tool.state?.status !== "completed") continue;
+      const input = toolInput(tool);
+
+      if (tool.name === PATCH_TOOL) {
+        const patch = stringField(input, "patchText");
+        if (patch) edits.push({ file: patchFiles(patch).join(", ") || "(patch)", patch });
+      } else if (tool.name === "write") {
+        const file = stringField(input, "filePath");
+        if (file) edits.push({ file, before: "", after: stringField(input, "content") ?? "" });
+      } else if (tool.name === "edit") {
+        const file = stringField(input, "filePath");
+        if (file) {
+          edits.push({
+            file,
+            before: stringField(input, "oldString") ?? "",
+            after: stringField(input, "newString") ?? "",
+          });
+        }
+      }
+    }
+  }
+  return edits;
 }

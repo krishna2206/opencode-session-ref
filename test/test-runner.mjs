@@ -1,10 +1,8 @@
 import assert from "node:assert";
 import { SessionDb } from "../dist/db/queries.js";
-import { sessionSearchTool } from "../dist/tools/search.js";
-import { createSessionListTool } from "../dist/tools/list.js";
-import { createSessionReadTool } from "../dist/tools/read.js";
-
-const sessionReadTool = createSessionReadTool({ session: { diff: async () => ({ data: [] }) } });
+import { searchSessions } from "../dist/tools/search.js";
+import { listSessions } from "../dist/tools/list.js";
+import { readSession } from "../dist/tools/read.js";
 
 async function runTests() {
   console.log("--- Starting opencode-session-ref tests ---\n");
@@ -37,32 +35,31 @@ async function runTests() {
 
   // 4. Test tool session_list
   console.log("\n4. Testing session_list tool execution...");
-  const listTool = createSessionListTool(process.cwd());
-  const listOutput = await listTool.execute({ limit: 3 }, {});
+  const listOutput = await listSessions({ limit: 3, currentDirectory: process.cwd() });
   assert(typeof listOutput === "string" && listOutput.includes("|"), "Output should be markdown table");
   console.log("✓ session_list output snippet:\n" + listOutput.slice(0, 150) + "...\n");
 
   // 5. Test tool session_search
   console.log("5. Testing session_search tool execution...");
-  const searchOutput = await sessionSearchTool.execute({ query: "prompt" }, {});
+  const searchOutput = await searchSessions({ query: "prompt" });
   assert(typeof searchOutput === "string", "Output should be string");
   console.log("✓ session_search output snippet:\n" + searchOutput.slice(0, 150) + "...\n");
 
   // 6. Test tool session_read (mode: summary)
   console.log("6. Testing session_read tool execution (mode: summary)...");
-  const readSummary = await sessionReadTool.execute({ session_id: targetSession.id, mode: "summary" }, {});
-  assert(typeof readSummary === "string" && readSummary.includes(targetSession.title), "Summary should contain title");
+  const readSummary = await readSession({ session_id: targetSession.id, mode: "summary" });
+  assert(typeof readSummary === "string" && readSummary.includes(targetSession.title || targetSession.slug), "Summary should contain title");
   console.log("✓ session_read (summary) output snippet:\n" + readSummary.slice(0, 200) + "...\n");
 
   // 7. Test tool session_read (mode: turns)
   console.log("7. Testing session_read tool execution (mode: turns)...");
-  const readTurns = await sessionReadTool.execute({ session_id: targetSession.id, mode: "turns", last_turns: 2 }, {});
+  const readTurns = await readSession({ session_id: targetSession.id, mode: "turns", last_turns: 2 });
   assert(typeof readTurns === "string", "Turns should return string");
   console.log("✓ session_read (turns) output snippet:\n" + readTurns.slice(0, 200) + "...\n");
 
   // 8. Test tool session_read (mode: diff)
   console.log("8. Testing session_read tool execution (mode: diff)...");
-  const readDiff = await sessionReadTool.execute({ session_id: targetSession.id, mode: "diff" }, {});
+  const readDiff = await readSession({ session_id: targetSession.id, mode: "diff" });
   assert(typeof readDiff === "string", "Diff should return string");
   console.log("✓ session_read (diff) output snippet:\n" + readDiff.slice(0, 150) + "...\n");
 
