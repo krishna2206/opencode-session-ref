@@ -9,7 +9,7 @@ export async function listSessions(args: {
   try {
     const directory = args.current_project_only ? args.currentDirectory : undefined;
     const sessions = await SessionDb.listRecentSessions({
-      limit: Math.min(args.limit ?? 10, 50),
+      limit: args.limit ?? 10,
       directory,
     });
     return formatSessionList(sessions);

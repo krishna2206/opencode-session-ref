@@ -20,10 +20,6 @@
       "default": "./dist/tui.js"
     }
   },
-  "oc-plugin": [
-    "server",
-    "tui"
-  ],
   "files": [
     "dist"
   ],
@@ -35,13 +31,13 @@
   "devDependencies": {
     "@babel/core": "^7.28.0",
     "@babel/preset-typescript": "^7.27.1",
-    "@opencode/plugin": "2.0.14",
-    "@types/node": "^22.0.0",
-    "babel-preset-solid": "^1.9.12",
-    "typescript": "7.0.2",
+    "@opencode/plugin": "^2.0.15",
     "@opentui/core": "0.5.10",
     "@opentui/solid": "0.5.10",
-    "solid-js": "1.9.15"
+    "@types/node": "^22.0.0",
+    "babel-preset-solid": "^1.9.12",
+    "solid-js": "1.9.15",
+    "typescript": "7.0.2"
   },
   "dependencies": {
     "effect": "4.0.0-rc.112"
@@ -53,6 +49,6 @@
     "solid-js": "^1.9.0"
   },
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=22.5.0"
   }
 }

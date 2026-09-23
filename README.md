@@ -15,10 +15,10 @@
 - **Autonomous Agent Tools**:
   - `session_search`: Search historical sessions by topic, keyword, or past bug discussion.
   - `session_list`: List recent sessions for the current project or across all directories.
-  - `session_read`: Read session details in 4 token-optimized modes (`summary`, `turns`, `diff`, `full`).
+  - `session_read`: Read session details in token-optimized modes (`summary`, `turns`, `diff`; `full` is an alias of `turns`).
 
 - **Token-Efficient & Clean**:
-  - Reads the OpenCode 2 database (`session_v2`, `session_message`) directly in read-only mode (`~/.local/share/opencode/opencode.db`): the plugin API gives server plugins no full history or text search.
+  - Reads the OpenCode 2 database (`session_v2`, `session_message`) directly in read-only mode (the database opencode uses: `OPENCODE_DB`, else `opencode.db` under `$XDG_DATA_HOME/opencode` or `~/.local/share/opencode`): the plugin API gives server plugins no full history or text search.
   - Drops reasoning, tool output and synthetic reminders; caps every `session_read` output at ~16 KB.
   - Preserves provider prompt caching with static system prompt injection.
 
@@ -84,10 +84,16 @@ The agent will automatically:
 
 ## Development & Testing
 
-Run unit & database integration tests:
+Unit tests (V1 and V2 message shapes, no database needed):
 
 ```bash
-node test/test-runner.mjs
+pnpm test
+```
+
+Smoke test against your live opencode database (needs `dist` built):
+
+```bash
+bun test/test-runner.mjs
 ```
 
 Build for production:

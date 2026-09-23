@@ -192,7 +192,8 @@ function capBytes(text: string): string {
 }
 
 /**
- * Full transcript including tool inputs and outputs.
+ * `full` mode: the same transcript as `turns`, kept as an alias for callers
+ * that ask for it.
  */
 export function formatSessionFull(
   session: SessionRow,

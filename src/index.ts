@@ -4,6 +4,7 @@ import { searchSessions } from "./tools/search.js";
 import { listSessions } from "./tools/list.js";
 import { readSession, READ_MODES } from "./tools/read.js";
 import { SESSION_REF_SYSTEM_PROMPT } from "./prompt.js";
+import { SessionDb } from "./db/queries.js";
 
 const Limit = (description: string) => Schema.optional(Schema.Number.annotate({ description }));
 
@@ -67,7 +68,7 @@ export default Plugin.define({
                 "summary: High-level overview of conversation + files touched (default, low tokens)\n" +
                 "turns: Clean User <-> Assistant conversational transcript (excluding heavy tool dumps)\n" +
                 "diff: File edits made by the session's editing tools\n" +
-                "full: Full transcript with actions",
+                "full: Same as turns (kept as an alias)",
             }),
           ),
           last_turns: Limit("If specified, returns only the last N turns of the session"),
@@ -75,5 +76,8 @@ export default Plugin.define({
         execute: async (input) => ({ content: await readSession(input) }),
       });
     });
+
+    // The read-only database handle would otherwise outlive a plugin reload.
+    return () => SessionDb.close();
   },
 });

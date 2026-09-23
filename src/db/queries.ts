@@ -63,8 +63,20 @@ const SESSION_COLUMNS = `id, project_id, parent_id, slug, directory, title, vers
        share_url, time_created, time_updated, agent, model, cost,
        tokens_input, tokens_output`;
 
+/** A usable LIMIT: SQLite treats a negative one as "no limit". */
+function clampLimit(value: number | undefined, fallback: number, max: number): number {
+  if (value === undefined || !Number.isFinite(value)) return fallback;
+  return Math.min(Math.max(1, Math.floor(value)), max);
+}
+
 export class SessionDb {
   private static conn: SqliteConn | null = null;
+
+  /** Closes the connection; the next query reopens it. */
+  static close(): void {
+    this.conn?.close();
+    this.conn = null;
+  }
 
   static async getConn(): Promise<SqliteConn> {
     if (!this.conn) {
@@ -84,7 +96,7 @@ export class SessionDb {
     since?: number;
   } = {}): Promise<SessionRow[]> {
     const conn = await this.getConn();
-    const limit = Math.min(options.limit ?? 20, 200);
+    const limit = clampLimit(options.limit, 20, 200);
 
     // Root sessions only, like opencode's own session list: subagent runs and
     // archived sessions would crowd out the conversations the user had.
@@ -140,16 +152,17 @@ export class SessionDb {
     limit?: number;
   }): Promise<SessionSearchResult[]> {
     const conn = await this.getConn();
-    const limit = Math.min(options.limit ?? 10, 50);
+    const limit = clampLimit(options.limit, 10, 50);
     const q = options.query.trim();
     if (!q) return [];
-    const pattern = `%${q}%`;
+    // The query is matched literally: `%` and `_` in it are not wildcards.
+    const pattern = `%${q.replace(/[\\%_]/g, "\\$&")}%`;
 
     // 1. Direct match on title or slug
     const matchingSessions = conn.all<SessionRow>(
       `SELECT ${SESSION_COLUMNS}
        FROM session_v2
-       WHERE title LIKE ? OR slug LIKE ?
+       WHERE title LIKE ? ESCAPE '\\' OR slug LIKE ? ESCAPE '\\'
        ORDER BY time_updated DESC
        LIMIT ?`,
       [pattern, pattern, limit],
@@ -169,13 +182,13 @@ export class SessionDb {
        FROM (
          SELECT m.session_id, m.time_created AS at, json_extract(m.data, '$.text') AS text
          FROM session_message m
-         WHERE m.type = 'user' AND json_extract(m.data, '$.text') LIKE ?
+         WHERE m.type = 'user' AND json_extract(m.data, '$.text') LIKE ? ESCAPE '\\'
          UNION ALL
          SELECT m.session_id, m.time_created AS at, json_extract(j.value, '$.text') AS text
          FROM session_message m, json_each(json_extract(m.data, '$.content')) j
-         WHERE m.type = 'assistant' AND m.data LIKE ?
+         WHERE m.type = 'assistant' AND m.data LIKE ? ESCAPE '\\'
            AND json_extract(j.value, '$.type') = 'text'
-           AND json_extract(j.value, '$.text') LIKE ?
+           AND json_extract(j.value, '$.text') LIKE ? ESCAPE '\\'
        ) hit
        JOIN session_v2 s ON s.id = hit.session_id
        ORDER BY hit.at DESC

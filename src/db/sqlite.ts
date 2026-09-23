@@ -39,10 +39,6 @@ interface NodeSqliteModule {
   ) => NodeSqliteDatabase;
 }
 
-interface BetterSqlite3Module {
-  default: new (path: string, options?: { readonly?: boolean }) => PreparedSqliteDatabase;
-}
-
 function toParams(params?: unknown[]): unknown[] {
   return Array.isArray(params) ? params : [];
 }
@@ -50,14 +46,6 @@ function toParams(params?: unknown[]): unknown[] {
 function runBunPragma(db: BunSqliteDatabase, sql: string): void {
   try {
     db.query(sql).run();
-  } catch {
-    // ignore
-  }
-}
-
-function runPreparedPragma(db: PreparedSqliteDatabase, sql: string): void {
-  try {
-    db.prepare(sql).run();
   } catch {
     // ignore
   }
@@ -144,16 +132,6 @@ async function openWithNodeSqlite(dbPath: string, mod: NodeSqliteModule): Promis
   return createPreparedSqliteConn(db);
 }
 
-async function openWithBetterSqlite3(dbPath: string): Promise<SqliteConn> {
-  const mod = (await import("better-sqlite3")) as unknown as BetterSqlite3Module;
-  const db = new mod.default(dbPath, { readonly: true });
-
-  runPreparedPragma(db, "PRAGMA query_only = ON;");
-  runPreparedPragma(db, "PRAGMA busy_timeout = 5000;");
-
-  return createPreparedSqliteConn(db);
-}
-
 export async function openOpenCodeSqliteReadOnly(dbPath: string): Promise<SqliteConn> {
   if (typeof globalThis === "object" && "Bun" in globalThis) {
     return openWithBunSqlite(dbPath);
@@ -164,12 +142,5 @@ export async function openOpenCodeSqliteReadOnly(dbPath: string): Promise<Sqlite
     return openWithNodeSqlite(dbPath, nodeSqlite);
   }
 
-  try {
-    return await openWithBetterSqlite3(dbPath);
-  } catch (cause) {
-    throw new Error(
-      "OpenCode SQLite backend unavailable: node:sqlite, bun:sqlite or better-sqlite3 is required.",
-      { cause },
-    );
-  }
+  throw new Error("OpenCode SQLite backend unavailable: bun:sqlite or node:sqlite (Node >= 22.5) is required.");
 }
