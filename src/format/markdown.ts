@@ -147,6 +147,13 @@ export function formatSessionTurns(
     const turnBytes = Buffer.byteLength(turnChunk, "utf-8");
 
     if (accumulatedBytes + turnBytes > MAX_SESSION_READ_BYTES) {
+      // A single oversized turn is shown cut rather than dropped, so the output
+      // is never an empty transcript.
+      if (includedCount === 0) {
+        const room = Math.max(0, MAX_SESSION_READ_BYTES - accumulatedBytes);
+        lines.push(Buffer.from(turnChunk, "utf-8").subarray(0, room).toString("utf-8"));
+        includedCount++;
+      }
       lines.push(
         `\n*(Output capped at ~16 KB to protect context. Showing ${includedCount} of ${selectedTurns.length} requested turns. Call session_read with smaller last_turns or mode: "summary")*`,
       );

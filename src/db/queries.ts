@@ -75,7 +75,7 @@ export class SessionDb {
   }
 
   /**
-   * List recent sessions, optionally filtered by directory/project and by a
+   * List recent root sessions, optionally filtered by directory and by a
    * minimum `time_updated` threshold (`since`, epoch ms).
    */
   static async listRecentSessions(options: {
@@ -86,23 +86,27 @@ export class SessionDb {
     const conn = await this.getConn();
     const limit = Math.min(options.limit ?? 20, 200);
 
-    const where: string[] = [];
+    // Root sessions only, like opencode's own session list: subagent runs and
+    // archived sessions would crowd out the conversations the user had.
+    const where: string[] = ["parent_id IS NULL", "time_archived IS NULL"];
     const params: unknown[] = [];
     if (options.directory) {
-      where.push("(directory = ? OR directory LIKE ?)");
-      params.push(options.directory, `${options.directory}%`);
+      // The directory itself or anything below it. A plain prefix would also
+      // match siblings (/a/foo matching /a/foobar), and LIKE would treat `_`
+      // and `%` in the path as wildcards.
+      const dir = options.directory.replace(/\/+$/, "");
+      where.push("(directory = ? OR substr(directory, 1, ?) = ?)");
+      params.push(dir, dir.length + 1, `${dir}/`);
     }
     if (options.since !== undefined) {
       where.push("time_updated >= ?");
       params.push(options.since);
     }
 
-    const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
-
     return conn.all<SessionRow>(
       `SELECT ${SESSION_COLUMNS}
        FROM session_v2
-       ${whereClause}
+       WHERE ${where.join(" AND ")}
        ORDER BY time_updated DESC
        LIMIT ?`,
       [...params, limit],

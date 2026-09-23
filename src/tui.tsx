@@ -48,29 +48,23 @@ async function listMonthSessions(ctx: Ctx): Promise<SessionInfo[]> {
 }
 
 /**
- * Inserts text into the prompt. OpenCode 2 gives TUI plugins no prompt-append
- * call, so this writes into the textarea that had focus before the dialog
- * opened. The dialog hands focus back 1 ms after closing, hence the delay.
+ * Inserts text at the end of the prompt. OpenCode 2 gives TUI plugins no
+ * prompt-append call, so this writes into the focused editor. A closing dialog
+ * hands focus back after 1 ms, hence the wait: focus is read only then, not
+ * before the picker opened (from the command palette, the palette input still
+ * holds it at that point and is destroyed right after).
  */
-function insertIntoPrompt(ctx: Ctx, target: unknown, text: string): boolean {
-  const textarea = target as {
-    isDestroyed?: boolean;
-    insertText?: (text: string) => void;
-    gotoBufferEnd?: () => void;
-  } | null;
-  if (!textarea || textarea.isDestroyed || typeof textarea.insertText !== "function") return false;
-  setTimeout(() => {
-    textarea.gotoBufferEnd?.();
-    textarea.insertText?.(text);
-    ctx.renderer.requestRender();
-  }, 5);
+async function insertIntoPrompt(ctx: Ctx, text: string): Promise<boolean> {
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const editor = ctx.renderer.currentFocusedEditor;
+  if (!editor || editor.isDestroyed) return false;
+  editor.gotoBufferEnd();
+  editor.insertText(text);
+  ctx.renderer.requestRender();
   return true;
 }
 
 async function openSessionPicker(ctx: Ctx): Promise<void> {
-  // Captured before the dialog steals focus.
-  const prompt = ctx.renderer.currentFocusedRenderable;
-
   let sessions: SessionInfo[];
   try {
     sessions = await listMonthSessions(ctx);
@@ -109,9 +103,10 @@ async function openSessionPicker(ctx: Ctx): Promise<void> {
   if (!session) return;
 
   const title = session.title || session.id;
-  const instruction = `@session(id: "${session.id}", title: "${title}")\n[Context: Past session referenced. Use \`session_read(session_id: "${session.id}")\` to inspect context before responding.]\n`;
+  // JSON quoting keeps a title with quotes or newlines on one valid line.
+  const instruction = `@session(id: "${session.id}", title: ${JSON.stringify(title)})\n[Context: Past session referenced. Use \`session_read(session_id: "${session.id}")\` to inspect context before responding.]\n`;
 
-  if (insertIntoPrompt(ctx, prompt, instruction)) {
+  if (await insertIntoPrompt(ctx, instruction)) {
     ctx.ui.toast.show({
       title: "Session Referenced",
       message: `Injected reference to "${title}"`,

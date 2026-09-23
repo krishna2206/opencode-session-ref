@@ -136,7 +136,8 @@ export function buildConversationTurns(messages: MessageRow[]): ConversationTurn
       const text = typeof data.text === "string" ? data.text.trim() : "";
       currentTurn = {
         turnIndex: turnCounter++,
-        userPrompt: text || "(Empty or file attachment prompt)",
+        // Pasted logs or files can make a prompt huge; cap it like replies.
+        userPrompt: truncateText(text, 2000) || "(Empty or file attachment prompt)",
         userTime: msg.time_created,
         assistantAnswers: [],
         toolsUsed: [],
