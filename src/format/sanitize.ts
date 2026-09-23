@@ -20,7 +20,7 @@ export interface ConversationTurn {
 
 /**
  * One file change as recorded by an editing tool call. `patch` is set for
- * `apply_patch` calls (already a patch), `before`/`after` for the others.
+ * patch tool calls (already a patch), `before`/`after` for the others.
  */
 export interface FileEdit {
   file: string;
@@ -42,7 +42,8 @@ interface ToolItem {
 /** Shell tool name: `bash` in sessions migrated from V1, `shell` in V2. */
 const SHELL_TOOLS = new Set(["bash", "shell"]);
 const EDIT_TOOLS = new Set(["edit", "write", "multiedit"]);
-const PATCH_TOOL = "apply_patch";
+/** Patch tool name: `apply_patch` in sessions migrated from V1, `patch` in V2. */
+const PATCH_TOOLS = new Set(["apply_patch", "patch"]);
 
 export function parseMessageData(dataStr: string): Record<string, unknown> {
   try {
@@ -75,7 +76,12 @@ function stringField(input: Record<string, unknown>, key: string): string | unde
   return typeof value === "string" ? value : undefined;
 }
 
-/** Files named by an `apply_patch` patch (`*** Update|Add|Delete File: <path>`). */
+/** Target file of edit/write/read: `path` in V2, `filePath` in sessions migrated from V1. */
+function filePathField(input: Record<string, unknown>): string | undefined {
+  return stringField(input, "path") ?? stringField(input, "filePath");
+}
+
+/** Files named by a patch (`*** Update|Add|Delete File: <path>`). */
 function patchFiles(patchText: string): string[] {
   const files: string[] = [];
   for (const match of patchText.matchAll(/^\*\*\* (?:Update|Add|Delete) File: (.+)$/gm)) {
@@ -92,7 +98,7 @@ function toolUse(item: ToolItem): ToolUse {
     tool: SHELL_TOOLS.has(name) ? "bash" : name,
     description: stringField(input, "description"),
     status: item.state?.status,
-    filePath: stringField(input, "filePath"),
+    filePath: filePathField(input),
     command: stringField(input, "command"),
   };
 }
@@ -100,11 +106,11 @@ function toolUse(item: ToolItem): ToolUse {
 function filesTouched(item: ToolItem): string[] {
   if (item.state?.status === "error") return [];
   const input = toolInput(item);
-  if (item.name === PATCH_TOOL) {
+  if (item.name !== undefined && PATCH_TOOLS.has(item.name)) {
     const patchText = stringField(input, "patchText");
     return patchText ? patchFiles(patchText) : [];
   }
-  const filePath = stringField(input, "filePath");
+  const filePath = filePathField(input);
   return item.name && EDIT_TOOLS.has(item.name) && filePath ? [filePath] : [];
 }
 
@@ -189,14 +195,14 @@ export function collectFileEdits(messages: MessageRow[]): FileEdit[] {
       if (tool.state?.status !== "completed") continue;
       const input = toolInput(tool);
 
-      if (tool.name === PATCH_TOOL) {
+      if (tool.name !== undefined && PATCH_TOOLS.has(tool.name)) {
         const patch = stringField(input, "patchText");
         if (patch) edits.push({ file: patchFiles(patch).join(", ") || "(patch)", patch });
       } else if (tool.name === "write") {
-        const file = stringField(input, "filePath");
+        const file = filePathField(input);
         if (file) edits.push({ file, before: "", after: stringField(input, "content") ?? "" });
       } else if (tool.name === "edit") {
-        const file = stringField(input, "filePath");
+        const file = filePathField(input);
         if (file) {
           edits.push({
             file,
