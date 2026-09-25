@@ -137,7 +137,7 @@ export default Plugin.define({
               group: "Session",
               palette: true,
               bind: "ctrl+s",
-              slash: { name: "ref-session", aliases: ["ref", "session-ref"] },
+              slash: { name: "ref-session", aliases: ["ref"] },
               run: () => openSessionPicker(ctx),
             },
           ],

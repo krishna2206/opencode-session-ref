@@ -53,7 +53,7 @@ Requires OpenCode 2. Add the built `dist` directory to `plugins` in `~/.config/o
 ## Usage
 
 ### 1. Interactive Picker (User-Driven)
-- Press **`Ctrl+S`** anywhere in the TUI (or type `/ref-session`, `/ref`, `/session-ref`).
+- Press **`Ctrl+S`** anywhere in the TUI (or type `/ref-session` or `/ref`).
 - Filter sessions with live fuzzy search.
 - Press **`Enter`** to inject the reference into your prompt:
   ```text
